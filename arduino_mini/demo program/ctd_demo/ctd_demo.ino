@@ -11,6 +11,7 @@
 #define NAK             0x33
 #define PC_MODE_RET     2
 #define LED_PIN         13
+#define EN_PIN          8
 #define TIMEOUT_MS      2000
 
 SoftwareSerial ctdSerial(12, 11); // RX=12, TX=11
@@ -85,6 +86,7 @@ void setup() {
     Serial.begin(9600);
     ctdSerial.begin(4800);
     delay(500);
+    digitalWrite(EN_PIN, HIGH);
 
     // Discard any wake bytes
     while (ctdSerial.available()) ctdSerial.read();
