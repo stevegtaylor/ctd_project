@@ -12,16 +12,29 @@
 #define PC_MODE_RET     2
 #define LED_PIN         13
 #define EN_PIN          8
+#define OUT_PIN         9
 #define TIMEOUT_MS      2000
+
+// At 4800 baud, 1 bit = 208us, 10 bits per byte = ~2.1ms per byte
+#define BYTE_TX_US      2100
 
 SoftwareSerial ctdSerial(12, 11); // RX=12, TX=11
 
 // ---- Helpers ----
 
+void txBegin() {
+    digitalWrite(EN_PIN, HIGH); // driver enable
+}
+
+void txEnd() {
+    delayMicroseconds(BYTE_TX_US); // wait for last byte to finish
+    digitalWrite(EN_PIN, LOW);     // switch to receive mode
+}
+
 int readByteTimeout() {
     unsigned long start = millis();
     while (!ctdSerial.available()) {
-        if (millis() - start > TIMEOUT_MS) return -1; // timeout
+        if (millis() - start > TIMEOUT_MS) return -1;
     }
     return ctdSerial.read();
 }
@@ -29,8 +42,10 @@ int readByteTimeout() {
 // ---- Protocol functions ----
 
 bool testConnection() {
+    txBegin();
     ctdSerial.write((uint8_t)COM_TEST);
-    
+    txEnd();
+
     int b0 = readByteTimeout();
     int b1 = readByteTimeout();
 
@@ -43,7 +58,9 @@ bool testConnection() {
 }
 
 bool setToPCMode() {
+    txBegin();
     ctdSerial.write((uint8_t)COM_PCMODE);
+    txEnd();
 
     int b0 = readByteTimeout();
     int b1 = readByteTimeout();
@@ -57,7 +74,12 @@ bool setToPCMode() {
 }
 
 int sendCommand(uint8_t cmd, uint8_t* buf) {
+    // Send command
+    txBegin();
     ctdSerial.write((uint8_t)cmd);
+    txEnd();
+
+    // Wait for echo
     int echo = readByteTimeout();
     if (echo != cmd) {
         Serial.print("  bad echo: 0x");
@@ -65,8 +87,12 @@ int sendCommand(uint8_t cmd, uint8_t* buf) {
         return -1;
     }
 
+    // Send ACK
+    txBegin();
     ctdSerial.write((uint8_t)ACK);
+    txEnd();
 
+    // Read response
     int len = 0;
     int b = readByteTimeout();
     if (b == -1) return -1;
@@ -81,12 +107,22 @@ int sendCommand(uint8_t cmd, uint8_t* buf) {
 
 void setup() {
     pinMode(LED_PIN, OUTPUT);
+    pinMode(EN_PIN, OUTPUT);
+    pinMode(OUT_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
+    digitalWrite(EN_PIN, LOW); // start in receive mode
+    digitalWrite(OUT_PIN, HIGH);
 
     Serial.begin(9600);
+    // Hold TX high before starting serial
+    // to prevent sensor from sleeping
+    pinMode(11, OUTPUT);
+    digitalWrite(11, HIGH);
+    delay(100); // give sensor time to wake
     ctdSerial.begin(4800);
-    delay(500);
-    digitalWrite(EN_PIN, HIGH);
+
+    Serial.println("Waiting for sensor to boot...");
+    delay(3000);
 
     // Discard any wake bytes
     while (ctdSerial.available()) ctdSerial.read();
