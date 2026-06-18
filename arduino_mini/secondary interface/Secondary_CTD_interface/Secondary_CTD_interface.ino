@@ -7,17 +7,21 @@
 #define COM_PCMODE      0x0C
 #define COM_ONLINE_MEAS 0x01
 
+// Power pin
+#define OUT_PIN 9
+
 // Protocol constants
-#define ACK          0x55
-#define PC_MODE_RET  2
-#define EN_PIN       8
-#define TIMEOUT_MS   2000
-#define BYTE_TX_US   2100
+#define ACK         0x55
+#define PC_MODE_RET 2
+#define EN_PIN      8
+#define TIMEOUT_MS  5000
+#define BYTE_TX_US  2100
 
 SoftwareSerial ctdSerial(12, 11); // RX=12, TX=11 (CTD sensor)
 SoftwareSerial cmdSerial(4, 3);   // RX=4,  TX=3  (controller)
 
 String inputBuffer = "";
+bool sensorReady = false;
 
 // ---- RS485 Helpers ----
 
@@ -42,39 +46,36 @@ int readByteTimeout() {
 
 // ---- CTD Protocol ----
 
-bool wakeAndConnect() {
-    pinMode(11, OUTPUT);
-    digitalWrite(11, HIGH);
-    delay(500);
-
-    ctdSerial.listen();
-    while (ctdSerial.available()) ctdSerial.read();
-
-    // Test connection
+bool testConnection() {
     txBegin();
     ctdSerial.write((uint8_t)COM_TEST);
     txEnd();
 
     int b0 = readByteTimeout();
     int b1 = readByteTimeout();
-    if (b0 != COM_TEST || b1 != ACK) {
-        Serial.println("ERROR: test_connection failed");
-        return false;
-    }
 
-    // Set PC mode
+    Serial.print("  test_connection raw bytes: 0x");
+    Serial.print(b0, HEX);
+    Serial.print(" 0x");
+    Serial.println(b1, HEX);
+
+    return (b0 == COM_TEST && b1 == ACK);
+}
+
+bool setToPCMode() {
     txBegin();
     ctdSerial.write((uint8_t)COM_PCMODE);
     txEnd();
 
-    b0 = readByteTimeout();
-    b1 = readByteTimeout();
-    if (b0 != COM_PCMODE || b1 != PC_MODE_RET) {
-        Serial.println("ERROR: set_to_pc_mode failed");
-        return false;
-    }
+    int b0 = readByteTimeout();
+    int b1 = readByteTimeout();
 
-    return true;
+    Serial.print("  set_to_pc_mode raw bytes: 0x");
+    Serial.print(b0, HEX);
+    Serial.print(" 0x");
+    Serial.println(b1, HEX);
+
+    return (b0 == COM_PCMODE && b1 == PC_MODE_RET);
 }
 
 bool takeMeasurement() {
@@ -133,7 +134,7 @@ bool takeMeasurement() {
 bool checkForCommand() {
     cmdSerial.listen();
     if (cmdSerial.available()) {
-        delay(20); // wait for full message to arrive
+        delay(20);
         while (cmdSerial.available()) {
             char c = cmdSerial.read();
             if (c == '\n' || c == '\r') {
@@ -141,12 +142,10 @@ bool checkForCommand() {
                 Serial.print("Buffer: '");
                 Serial.print(inputBuffer);
                 Serial.println("'");
-
                 if (inputBuffer.endsWith("MEASURE")) {
                     inputBuffer = "";
                     return true;
                 } else if (inputBuffer.length() > 0) {
-                    // Got something unrecognised — send CLARIFY
                     Serial.println("Unknown command, sending CLARIFY");
                     cmdSerial.println("CLARIFY");
                     inputBuffer = "";
@@ -164,13 +163,43 @@ bool checkForCommand() {
 
 void setup() {
     pinMode(EN_PIN, OUTPUT);
+    pinMode(OUT_PIN, HIGH);
     digitalWrite(EN_PIN, LOW);
+    digitalWrite(OUT_PIN, HIGH);
+
+    // Hold TX high before serial starts to prevent sensor sleeping
+    pinMode(11, OUTPUT);
+    digitalWrite(11, HIGH);
+    delay(100);
 
     Serial.begin(9600);
     ctdSerial.begin(4800);
+    
+
+    Serial.println("Waiting for sensor to boot...");
+    delay(3000);
+
+    ctdSerial.listen();
+    while (ctdSerial.available()) ctdSerial.read();
+
+    Serial.println("Testing connection...");
+    if (!testConnection()) {
+        Serial.println("ERROR: test_connection failed");
+        sensorReady = false;
+    } else {
+        Serial.println("Connection OK");
+        Serial.println("Setting PC mode...");
+        if (!setToPCMode()) {
+            Serial.println("ERROR: set_to_pc_mode failed");
+            sensorReady = false;
+        } else {
+            Serial.println("PC mode OK - sensor ready");
+            sensorReady = true;
+        }
+    }
+
     cmdSerial.begin(4800);
     cmdSerial.listen();
-
     Serial.println("Secondary ready - waiting for MEASURE command");
 }
 
@@ -178,12 +207,18 @@ void loop() {
     cmdSerial.listen();
 
     if (checkForCommand()) {
-        Serial.println("MEASURE received, waking CTD...");
+        Serial.println("MEASURE received");
+
+        if (!sensorReady) {
+            Serial.println("Sensor not ready, sending ERROR");
+            cmdSerial.listen();
+            cmdSerial.println("ERROR");
+            return;
+        }
+
         ctdSerial.listen();
-        if (wakeAndConnect()) {
-            takeMeasurement();
-        } else {
-            // Failed to connect to CTD, notify controller
+        if (!takeMeasurement()) {
+            Serial.println("Measurement failed, sending ERROR");
             cmdSerial.listen();
             cmdSerial.println("ERROR");
         }
