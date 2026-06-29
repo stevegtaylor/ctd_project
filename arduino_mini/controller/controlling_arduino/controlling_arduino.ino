@@ -2,25 +2,14 @@
 #include <SoftwareSerial.h>
 
 // ---- USER CONFIGURATION ----
-#define NUM_SENSORS      1
+#define NUM_SENSORS      1     // Number of sensors on the bus (0 to NUM_SENSORS-1)
 #define POLL_INTERVAL_MS 5000
 // ----------------------------
 
-// RS485 enable pin
 #define EN_PIN      8
 #define BYTE_TX_US  2100
-
-// serial/rs232 power pin
-#define OUT_PIN 9
-
-// Demux pins (only used if NUM_SENSORS > 1)
-#define DEMUX_A0 5
-#define DEMUX_A1 6
-#define DEMUX_A2 7
-
-// Shared serial bus
-#define SHARED_RX 12
-#define SHARED_TX 11
+#define SHARED_RX   11
+#define SHARED_TX   12
 
 SoftwareSerial sensorBus(SHARED_RX, SHARED_TX);
 
@@ -40,21 +29,7 @@ void txBegin() {
 }
 
 void txEnd() {
-    delayMicroseconds(BYTE_TX_US);
     digitalWrite(EN_PIN, LOW);
-}
-
-// ---- Demux ----
-
-void selectSensor(int index) {
-#if NUM_SENSORS > 1
-    digitalWrite(DEMUX_A0, (index >> 0) & 1);
-    digitalWrite(DEMUX_A1, (index >> 1) & 1);
-    digitalWrite(DEMUX_A2, (index >> 2) & 1);
-    delay(10);
-    Serial.print("Selecting sensor ");
-    Serial.println(index);
-#endif
 }
 
 // ---- Communication ----
@@ -73,6 +48,7 @@ String readLineTimeout(unsigned long timeoutMs) {
 }
 
 void parseMeasurement(String response, int index) {
+    // Expected format: *00*Temp_bin: XXXX  Pres_bin: XXXX  Sal_bin: XXXX
     int tIdx = response.indexOf("Temp_bin: ");
     int pIdx = response.indexOf("Pres_bin: ");
     int sIdx = response.indexOf("Sal_bin: ");
@@ -89,24 +65,29 @@ void parseMeasurement(String response, int index) {
     readings[index].valid = true;
 }
 
+String addressString(int index) {
+    // Zero pad to 2 digits
+    if (index < 10) return "0" + String(index);
+    return String(index);
+}
+
 void sendMeasureCommand(int index) {
-    selectSensor(index);
     readings[index].valid = false;
+    String addr = addressString(index);
+    String cmd = "*" + addr + "*MEASURE";
 
     int retries = 5;
     while (retries > 0) {
-        Serial.print("Sending MEASURE to sensor ");
-        Serial.print(index);
+        Serial.print("Sending ");
+        Serial.print(cmd);
         Serial.print(" (attempts remaining: ");
         Serial.print(retries);
         Serial.println(")");
 
-        // Transmit MEASURE command
         txBegin();
-        sensorBus.println("*MEASURE");
+        sensorBus.println(cmd);
         txEnd();
 
-        // Switch to receive and wait for response
         String response = readLineTimeout(3000);
         response.trim();
 
@@ -118,11 +99,11 @@ void sendMeasureCommand(int index) {
             Serial.println("  Got CLARIFY, retrying...");
             delay(100);
             retries--;
-        } else if (response.startsWith("Temp_bin")) {
+        } else if (response.startsWith("*" + addr + "*Temp_bin")) {
             parseMeasurement(response, index);
             Serial.println("  Measurement OK");
             return;
-        } else if (response == "ERROR") {
+        } else if (response == "*" + addr + "*ERROR") {
             Serial.println("  Secondary reported CTD error");
             return;
         } else {
@@ -133,7 +114,7 @@ void sendMeasureCommand(int index) {
     }
 
     Serial.print("ERROR: sensor ");
-    Serial.print(index);
+    Serial.print(addr);
     Serial.println(" failed after all retries");
 }
 
@@ -143,7 +124,7 @@ void printReadings() {
     Serial.println("========== Readings ==========");
     for (int i = 0; i < NUM_SENSORS; i++) {
         Serial.print("Sensor ");
-        Serial.print(i);
+        Serial.print(addressString(i));
         Serial.print(": ");
         if (readings[i].valid) {
             Serial.print("Temp_bin=");   Serial.print(readings[i].temp_bin);
@@ -160,31 +141,17 @@ void printReadings() {
 
 void setup() {
     pinMode(EN_PIN, OUTPUT);
-    pinMode(OUT_PIN, OUTPUT);
-    digitalWrite(EN_PIN, LOW); // start in receive mode
-    digitalWrite(OUT_PIN, HIGH);
+    digitalWrite(EN_PIN, LOW);
 
     Serial.begin(9600);
     sensorBus.begin(4800);
-
-#if NUM_SENSORS > 1
-    pinMode(DEMUX_A0, OUTPUT);
-    pinMode(DEMUX_A1, OUTPUT);
-    pinMode(DEMUX_A2, OUTPUT);
-    digitalWrite(DEMUX_A0, LOW);
-    digitalWrite(DEMUX_A1, LOW);
-    digitalWrite(DEMUX_A2, LOW);
-    Serial.println("Demux enabled");
-#else
-    Serial.println("Single sensor mode - demux disabled");
-#endif
 
     for (int i = 0; i < NUM_SENSORS; i++) {
         readings[i].valid = false;
     }
 
     Serial.println("Waiting for secondaries to boot...");
-    delay(8000); // give secondaries time to connect to CTD
+    delay(8000);
 
     Serial.print("Controller ready - managing ");
     Serial.print(NUM_SENSORS);

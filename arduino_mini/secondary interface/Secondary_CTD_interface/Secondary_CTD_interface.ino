@@ -7,34 +7,38 @@
 #define COM_PCMODE      0x0C
 #define COM_ONLINE_MEAS 0x01
 
-// CTD power pin
+// ---- USER CONFIGURATION ----
+#define SENSOR_ADDRESS  0     // Change to 1, 2, 3... for each sensor
+// ----------------------------
+
 #define OUT_PIN     9
 #define EN_PIN      8
 #define ACK         0x55
 #define PC_MODE_RET 2
 #define TIMEOUT_MS  5000
-
-// At 4800 baud, full measurement string ~45 chars = ~94ms
 #define CMD_TX_WAIT_MS 150
 
-SoftwareSerial ctdSerial(12, 11); // RX=12, TX=11 (CTD sensor)
-SoftwareSerial cmdSerial(4, 3);   // RX=4,  TX=3  (controller)
+SoftwareSerial ctdSerial(3, 4);   // RX=3, TX=4 (CTD sensor)
+SoftwareSerial cmdSerial(11, 12); // RX=11, TX=12 (controller bus)
 
 String inputBuffer = "";
 bool sensorReady = false;
 
-// ---- CMD RS485 Helpers ----
+// ---- Helpers ----
+
+String myAddress() {
+    if (SENSOR_ADDRESS < 10) return "0" + String(SENSOR_ADDRESS);
+    return String(SENSOR_ADDRESS);
+}
 
 void cmdTxBegin() {
     digitalWrite(EN_PIN, HIGH);
 }
 
 void cmdTxEnd() {
-    delay(CMD_TX_WAIT_MS); // wait for full string to transmit
+    delay(CMD_TX_WAIT_MS);
     digitalWrite(EN_PIN, LOW);
 }
-
-// ---- CTD Helpers ----
 
 int readByteTimeout() {
     unsigned long start = millis();
@@ -48,29 +52,23 @@ int readByteTimeout() {
 
 bool testConnection() {
     ctdSerial.write((uint8_t)COM_TEST);
-
     int b0 = readByteTimeout();
     int b1 = readByteTimeout();
-
     Serial.print("  test_connection raw bytes: 0x");
     Serial.print(b0, HEX);
     Serial.print(" 0x");
     Serial.println(b1, HEX);
-
     return (b0 == COM_TEST && b1 == ACK);
 }
 
 bool setToPCMode() {
     ctdSerial.write((uint8_t)COM_PCMODE);
-
     int b0 = readByteTimeout();
     int b1 = readByteTimeout();
-
     Serial.print("  set_to_pc_mode raw bytes: 0x");
     Serial.print(b0, HEX);
     Serial.print(" 0x");
     Serial.println(b1, HEX);
-
     return (b0 == COM_PCMODE && b1 == PC_MODE_RET);
 }
 
@@ -111,9 +109,10 @@ bool takeMeasurement() {
     Serial.print("  Pres_bin: "); Serial.print(pressure_bin);
     Serial.print("  Sal_bin: ");  Serial.println(salinity_bin);
 
-    // Send result to controller via RS485
+    // Send result back with address prefix
     cmdTxBegin();
     cmdSerial.listen();
+    cmdSerial.print("*"); cmdSerial.print(myAddress()); cmdSerial.print("*");
     cmdSerial.print("Temp_bin: ");   cmdSerial.print(temp_bin);
     cmdSerial.print("  Pres_bin: "); cmdSerial.print(pressure_bin);
     cmdSerial.print("  Sal_bin: ");  cmdSerial.println(salinity_bin);
@@ -135,19 +134,44 @@ bool checkForCommand() {
                 Serial.print("Buffer: '");
                 Serial.print(inputBuffer);
                 Serial.println("'");
-                if (inputBuffer.endsWith("MEASURE")) {
-                    inputBuffer = "";
-                    return true;
+
+                // Check if message is addressed to us
+                // Expected format: *00*MEASURE
+                String expectedPrefix = "*" + myAddress() + "*";
+
+                if (inputBuffer.startsWith(expectedPrefix)) {
+                    String command = inputBuffer.substring(expectedPrefix.length());
+                    if (command == "MEASURE") {
+                        inputBuffer = "";
+                        return true;
+                    } else {
+                        // Addressed to us but unknown command
+                        // Only send CLARIFY if we are address 00
+                        if (SENSOR_ADDRESS == 0) {
+                            Serial.println("Unknown command, sending CLARIFY");
+                            cmdTxBegin();
+                            cmdSerial.println("CLARIFY");
+                            cmdTxEnd();
+                        }
+                        inputBuffer = "";
+                    }
                 } else if (inputBuffer.length() > 0) {
-                    Serial.println("Unknown command, sending CLARIFY");
-                    cmdTxBegin();
-                    cmdSerial.println("CLARIFY");
-                    cmdTxEnd();
+                    // Message for a different address — stay silent
+                    // BUT if garbled (no valid address prefix) and we are 00, send CLARIFY
+                    bool hasValidPrefix = inputBuffer.startsWith("*");
+                    if (!hasValidPrefix && SENSOR_ADDRESS == 0) {
+                        Serial.println("Garbled command, sending CLARIFY");
+                        cmdTxBegin();
+                        cmdSerial.println("CLARIFY");
+                        cmdTxEnd();
+                    } else {
+                        Serial.println("Message not for us, ignoring");
+                    }
                     inputBuffer = "";
                 }
             } else {
                 inputBuffer += c;
-                if (inputBuffer.length() > 20) inputBuffer = "";
+                if (inputBuffer.length() > 30) inputBuffer = "";
             }
         }
     }
@@ -159,16 +183,18 @@ bool checkForCommand() {
 void setup() {
     pinMode(EN_PIN, OUTPUT);
     pinMode(OUT_PIN, OUTPUT);
-    digitalWrite(EN_PIN, LOW);  // start in receive mode
-    digitalWrite(OUT_PIN, HIGH); // power the CTD
+    digitalWrite(EN_PIN, LOW);
+    digitalWrite(OUT_PIN, HIGH);
 
-    // Hold TX high before serial starts to prevent sensor sleeping
-    pinMode(11, OUTPUT);
-    digitalWrite(11, HIGH);
+    pinMode(4, OUTPUT);
+    digitalWrite(4, HIGH);
     delay(100);
 
     Serial.begin(9600);
     ctdSerial.begin(4800);
+
+    Serial.print("Sensor address: ");
+    Serial.println(myAddress());
 
     Serial.println("Waiting for sensor to boot...");
     delay(3000);
@@ -182,7 +208,6 @@ void setup() {
         sensorReady = false;
     } else {
         Serial.println("Connection OK");
-        Serial.println("Setting PC mode...");
         if (!setToPCMode()) {
             Serial.println("ERROR: set_to_pc_mode failed");
             sensorReady = false;
@@ -194,7 +219,9 @@ void setup() {
 
     cmdSerial.begin(4800);
     cmdSerial.listen();
-    Serial.println("Secondary ready - waiting for MEASURE command");
+    Serial.print("Secondary ");
+    Serial.print(myAddress());
+    Serial.println(" ready - waiting for MEASURE command");
 }
 
 void loop() {
@@ -206,6 +233,7 @@ void loop() {
         if (!sensorReady) {
             Serial.println("Sensor not ready, sending ERROR");
             cmdTxBegin();
+            cmdSerial.print("*"); cmdSerial.print(myAddress()); cmdSerial.print("*");
             cmdSerial.println("ERROR");
             cmdTxEnd();
             return;
@@ -215,6 +243,7 @@ void loop() {
         if (!takeMeasurement()) {
             Serial.println("Measurement failed, sending ERROR");
             cmdTxBegin();
+            cmdSerial.print("*"); cmdSerial.print(myAddress()); cmdSerial.print("*");
             cmdSerial.println("ERROR");
             cmdTxEnd();
         }
