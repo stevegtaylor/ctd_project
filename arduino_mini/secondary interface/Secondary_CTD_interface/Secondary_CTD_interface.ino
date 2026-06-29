@@ -7,15 +7,15 @@
 #define COM_PCMODE      0x0C
 #define COM_ONLINE_MEAS 0x01
 
-// Power pin
-#define OUT_PIN 9
-
-// Protocol constants
+// CTD power pin
+#define OUT_PIN     9
+#define EN_PIN      8
 #define ACK         0x55
 #define PC_MODE_RET 2
-#define EN_PIN      8
 #define TIMEOUT_MS  5000
-#define BYTE_TX_US  2100
+
+// At 4800 baud, full measurement string ~45 chars = ~94ms
+#define CMD_TX_WAIT_MS 150
 
 SoftwareSerial ctdSerial(12, 11); // RX=12, TX=11 (CTD sensor)
 SoftwareSerial cmdSerial(4, 3);   // RX=4,  TX=3  (controller)
@@ -23,14 +23,14 @@ SoftwareSerial cmdSerial(4, 3);   // RX=4,  TX=3  (controller)
 String inputBuffer = "";
 bool sensorReady = false;
 
-// ---- RS485 Helpers ----
+// ---- CMD RS485 Helpers ----
 
-void txBegin() {
+void cmdTxBegin() {
     digitalWrite(EN_PIN, HIGH);
 }
 
-void txEnd() {
-    delayMicroseconds(BYTE_TX_US);
+void cmdTxEnd() {
+    delay(CMD_TX_WAIT_MS); // wait for full string to transmit
     digitalWrite(EN_PIN, LOW);
 }
 
@@ -47,9 +47,7 @@ int readByteTimeout() {
 // ---- CTD Protocol ----
 
 bool testConnection() {
-    txBegin();
     ctdSerial.write((uint8_t)COM_TEST);
-    txEnd();
 
     int b0 = readByteTimeout();
     int b1 = readByteTimeout();
@@ -63,9 +61,7 @@ bool testConnection() {
 }
 
 bool setToPCMode() {
-    txBegin();
     ctdSerial.write((uint8_t)COM_PCMODE);
-    txEnd();
 
     int b0 = readByteTimeout();
     int b1 = readByteTimeout();
@@ -82,9 +78,7 @@ bool takeMeasurement() {
     uint8_t buf[16];
     int len = 0;
 
-    txBegin();
     ctdSerial.write((uint8_t)COM_ONLINE_MEAS);
-    txEnd();
 
     int echo = readByteTimeout();
     if (echo != COM_ONLINE_MEAS) {
@@ -93,9 +87,7 @@ bool takeMeasurement() {
         return false;
     }
 
-    txBegin();
     ctdSerial.write((uint8_t)ACK);
-    txEnd();
 
     int b = readByteTimeout();
     if (b == -1) return false;
@@ -119,12 +111,13 @@ bool takeMeasurement() {
     Serial.print("  Pres_bin: "); Serial.print(pressure_bin);
     Serial.print("  Sal_bin: ");  Serial.println(salinity_bin);
 
-    // Send result to controller
+    // Send result to controller via RS485
+    cmdTxBegin();
     cmdSerial.listen();
     cmdSerial.print("Temp_bin: ");   cmdSerial.print(temp_bin);
     cmdSerial.print("  Pres_bin: "); cmdSerial.print(pressure_bin);
     cmdSerial.print("  Sal_bin: ");  cmdSerial.println(salinity_bin);
-    cmdSerial.listen();
+    cmdTxEnd();
 
     return true;
 }
@@ -147,7 +140,9 @@ bool checkForCommand() {
                     return true;
                 } else if (inputBuffer.length() > 0) {
                     Serial.println("Unknown command, sending CLARIFY");
+                    cmdTxBegin();
                     cmdSerial.println("CLARIFY");
+                    cmdTxEnd();
                     inputBuffer = "";
                 }
             } else {
@@ -163,9 +158,9 @@ bool checkForCommand() {
 
 void setup() {
     pinMode(EN_PIN, OUTPUT);
-    pinMode(OUT_PIN, HIGH);
-    digitalWrite(EN_PIN, LOW);
-    digitalWrite(OUT_PIN, HIGH);
+    pinMode(OUT_PIN, OUTPUT);
+    digitalWrite(EN_PIN, LOW);  // start in receive mode
+    digitalWrite(OUT_PIN, HIGH); // power the CTD
 
     // Hold TX high before serial starts to prevent sensor sleeping
     pinMode(11, OUTPUT);
@@ -174,7 +169,6 @@ void setup() {
 
     Serial.begin(9600);
     ctdSerial.begin(4800);
-    
 
     Serial.println("Waiting for sensor to boot...");
     delay(3000);
@@ -211,16 +205,18 @@ void loop() {
 
         if (!sensorReady) {
             Serial.println("Sensor not ready, sending ERROR");
-            cmdSerial.listen();
+            cmdTxBegin();
             cmdSerial.println("ERROR");
+            cmdTxEnd();
             return;
         }
 
         ctdSerial.listen();
         if (!takeMeasurement()) {
             Serial.println("Measurement failed, sending ERROR");
-            cmdSerial.listen();
+            cmdTxBegin();
             cmdSerial.println("ERROR");
+            cmdTxEnd();
         }
         cmdSerial.listen();
     }

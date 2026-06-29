@@ -7,6 +7,7 @@
 #define COM_ONLINE_MEAS 0x01
 
 // Protocol constants
+
 #define ACK             0x55
 #define NAK             0x33
 #define PC_MODE_RET     2

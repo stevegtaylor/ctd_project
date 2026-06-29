@@ -2,16 +2,23 @@
 #include <SoftwareSerial.h>
 
 // ---- USER CONFIGURATION ----
-#define NUM_SENSORS      1     // Change this to 1-9
+#define NUM_SENSORS      1
 #define POLL_INTERVAL_MS 5000
 // ----------------------------
+
+// RS485 enable pin
+#define EN_PIN      8
+#define BYTE_TX_US  2100
+
+// serial/rs232 power pin
+#define OUT_PIN 9
 
 // Demux pins (only used if NUM_SENSORS > 1)
 #define DEMUX_A0 5
 #define DEMUX_A1 6
 #define DEMUX_A2 7
 
-// Shared serial bus to demux or direct to secondary
+// Shared serial bus
 #define SHARED_RX 12
 #define SHARED_TX 11
 
@@ -25,6 +32,17 @@ struct Measurement {
 };
 
 Measurement readings[NUM_SENSORS];
+
+// ---- RS485 Helpers ----
+
+void txBegin() {
+    digitalWrite(EN_PIN, HIGH);
+}
+
+void txEnd() {
+    delayMicroseconds(BYTE_TX_US);
+    digitalWrite(EN_PIN, LOW);
+}
 
 // ---- Demux ----
 
@@ -83,8 +101,12 @@ void sendMeasureCommand(int index) {
         Serial.print(retries);
         Serial.println(")");
 
+        // Transmit MEASURE command
+        txBegin();
         sensorBus.println("*MEASURE");
+        txEnd();
 
+        // Switch to receive and wait for response
         String response = readLineTimeout(3000);
         response.trim();
 
@@ -104,7 +126,6 @@ void sendMeasureCommand(int index) {
             Serial.println("  Secondary reported CTD error");
             return;
         } else {
-            // Unknown or empty response
             Serial.println("  Unknown response, retrying...");
             delay(100);
             retries--;
@@ -138,6 +159,11 @@ void printReadings() {
 // ---- Setup & Loop ----
 
 void setup() {
+    pinMode(EN_PIN, OUTPUT);
+    pinMode(OUT_PIN, OUTPUT);
+    digitalWrite(EN_PIN, LOW); // start in receive mode
+    digitalWrite(OUT_PIN, HIGH);
+
     Serial.begin(9600);
     sensorBus.begin(4800);
 
@@ -158,7 +184,7 @@ void setup() {
     }
 
     Serial.println("Waiting for secondaries to boot...");
-    delay(3000);
+    delay(8000); // give secondaries time to connect to CTD
 
     Serial.print("Controller ready - managing ");
     Serial.print(NUM_SENSORS);
