@@ -2,7 +2,7 @@
 #include <SoftwareSerial.h>
 
 // ---- USER CONFIGURATION ----
-#define NUM_SENSORS      1     // Number of sensors on the bus (0 to NUM_SENSORS-1)
+#define NUM_SENSORS      2     // Number of sensors on the bus (0 to NUM_SENSORS-1)
 #define POLL_INTERVAL_MS 5000
 // ----------------------------
 

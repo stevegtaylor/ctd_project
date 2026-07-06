@@ -8,7 +8,7 @@
 #define COM_ONLINE_MEAS 0x01
 
 // ---- USER CONFIGURATION ----
-#define SENSOR_ADDRESS  0     // Change to 1, 2, 3... for each sensor
+#define SENSOR_ADDRESS  1     // Change to 1, 2, 3... for each sensor
 // ----------------------------
 
 #define OUT_PIN     9
