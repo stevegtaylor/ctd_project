@@ -2,12 +2,17 @@
 #include <SoftwareSerial.h>
 
 // ---- USER CONFIGURATION ----
-#define NUM_SENSORS      2     // Number of sensors on the bus (0 to NUM_SENSORS-1)
-#define POLL_INTERVAL_MS 5000
+#define NUM_SENSORS 2
+
+// Sampling interval in milliseconds for each sensor
+// Index matches sensor address: [sensor00, sensor01, ...]
+const unsigned long SAMPLE_INTERVAL_MS[NUM_SENSORS] = {
+    5000,   // sensor 00 — every 5 seconds
+    10000,  // sensor 01 — every 10 seconds
+};
 // ----------------------------
 
 #define EN_PIN      8
-#define BYTE_TX_US  2100
 #define SHARED_RX   11
 #define SHARED_TX   12
 
@@ -18,6 +23,7 @@ struct Measurement {
     uint16_t temp_bin;
     uint16_t pressure_bin;
     uint16_t salinity_bin;
+    unsigned long lastSampleMs; // when we last sampled this sensor
 };
 
 Measurement readings[NUM_SENSORS];
@@ -48,7 +54,6 @@ String readLineTimeout(unsigned long timeoutMs) {
 }
 
 void parseMeasurement(String response, int index) {
-    // Expected format: *00*Temp_bin: XXXX  Pres_bin: XXXX  Sal_bin: XXXX
     int tIdx = response.indexOf("Temp_bin: ");
     int pIdx = response.indexOf("Pres_bin: ");
     int sIdx = response.indexOf("Sal_bin: ");
@@ -63,10 +68,10 @@ void parseMeasurement(String response, int index) {
     readings[index].pressure_bin = response.substring(pIdx + 10, sIdx).toInt();
     readings[index].salinity_bin = response.substring(sIdx + 9).toInt();
     readings[index].valid = true;
+    readings[index].lastSampleMs = millis();
 }
 
 String addressString(int index) {
-    // Zero pad to 2 digits
     if (index < 10) return "0" + String(index);
     return String(index);
 }
@@ -125,7 +130,9 @@ void printReadings() {
     for (int i = 0; i < NUM_SENSORS; i++) {
         Serial.print("Sensor ");
         Serial.print(addressString(i));
-        Serial.print(": ");
+        Serial.print(" (every ");
+        Serial.print(SAMPLE_INTERVAL_MS[i] / 1000);
+        Serial.print("s): ");
         if (readings[i].valid) {
             Serial.print("Temp_bin=");   Serial.print(readings[i].temp_bin);
             Serial.print("  Pres_bin="); Serial.print(readings[i].pressure_bin);
@@ -148,6 +155,7 @@ void setup() {
 
     for (int i = 0; i < NUM_SENSORS; i++) {
         readings[i].valid = false;
+        readings[i].lastSampleMs = 0; // force immediate sample on first loop
     }
 
     Serial.println("Waiting for secondaries to boot...");
@@ -159,16 +167,14 @@ void setup() {
 }
 
 void loop() {
-    unsigned long cycleStart = millis();
+    unsigned long now = millis();
 
     for (int i = 0; i < NUM_SENSORS; i++) {
-        sendMeasureCommand(i);
-    }
-
-    printReadings();
-
-    unsigned long elapsed = millis() - cycleStart;
-    if (elapsed < POLL_INTERVAL_MS) {
-        delay(POLL_INTERVAL_MS - elapsed);
+        if (now - readings[i].lastSampleMs >= SAMPLE_INTERVAL_MS[i]) {
+            Serial.print("Sampling sensor ");
+            Serial.println(addressString(i));
+            sendMeasureCommand(i);
+            printReadings();
+        }
     }
 }
